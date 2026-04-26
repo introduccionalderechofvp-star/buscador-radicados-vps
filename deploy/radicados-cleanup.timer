@@ -1,0 +1,10 @@
+[Unit]
+Description=Disparador semanal de radicados-cleanup.service
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+Unit=radicados-cleanup.service
+
+[Install]
+WantedBy=timers.target

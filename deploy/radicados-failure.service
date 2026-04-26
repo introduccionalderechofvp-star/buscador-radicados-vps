@@ -1,0 +1,12 @@
+[Unit]
+Description=Notificación de falla de radicados.service por Telegram
+
+[Service]
+Type=oneshot
+User=radicados
+Group=radicados
+WorkingDirectory=/home/radicados/app
+EnvironmentFile=/etc/radicados.env
+Environment=TZ=America/Bogota
+Environment=SERVICE_NAME=radicados.service
+ExecStart=/usr/bin/node /home/radicados/app/notificar.js falla

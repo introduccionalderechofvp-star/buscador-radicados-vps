@@ -1,0 +1,16 @@
+{
+  "name": "consulta-radicados",
+  "version": "0.1.0",
+  "description": "Consulta automatizada de radicados en la Rama Judicial con captura de pantalla y extracción de actuaciones.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "consultar": "node consultar.js",
+    "notificar": "node notificar.js",
+    "reporte": "node consultar.js && node notificar.js"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "playwright": "^1.47.0"
+  }
+}
