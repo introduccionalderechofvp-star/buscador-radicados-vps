@@ -1,5 +1,5 @@
 [Unit]
-Description=Consulta nocturna de radicados (Rama Judicial) + envío a Telegram
+Description=Consulta nocturna de radicados (Rama Judicial)
 Wants=network-online.target
 After=network-online.target
 
@@ -14,10 +14,8 @@ Environment=NODE_ENV=production
 # Trae cambios recientes de radicados.md (no falla si no hay remoto/red).
 ExecStartPre=-/usr/bin/git -C /home/radicados/app pull --ff-only
 ExecStart=/usr/bin/node /home/radicados/app/consultar.js
-ExecStartPost=/usr/bin/node /home/radicados/app/notificar.js reporte
 TimeoutStartSec=2h
 Nice=10
-OnFailure=radicados-failure.service
 
 [Install]
 WantedBy=multi-user.target

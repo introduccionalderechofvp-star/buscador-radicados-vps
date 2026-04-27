@@ -1,11 +1,11 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { Buffer } from 'node:buffer';
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const RAIZ_RESULTADOS = path.resolve(process.env.RESULTADOS_DIR ?? 'resultados');
-const MODO = process.argv[2] ?? 'reporte';
+const MODO = process.argv[2] ?? 'auto';
 
 if (!TOKEN || !CHAT_ID) {
   console.error('Faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID en el entorno.');
@@ -48,14 +48,8 @@ async function enviarDocumento(rutaArchivo, caption) {
   return callTelegram('sendDocument', form);
 }
 
-async function ultimaCarpetaFecha(raiz) {
-  const entradas = await readdir(raiz, { withFileTypes: true });
-  const carpetas = entradas
-    .filter((e) => e.isDirectory() && /^\d{4}-\d{2}-\d{2}$/.test(e.name))
-    .map((e) => e.name)
-    .sort();
-  if (carpetas.length === 0) return null;
-  return path.join(raiz, carpetas.at(-1));
+function fechaHoyBogota() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
 }
 
 async function archivoMasReciente(carpeta, prefijo, extension) {
@@ -86,11 +80,7 @@ function captionDesdeResumen(md, fechaCarpeta) {
   return caption;
 }
 
-async function enviarReporte() {
-  const carpeta = await ultimaCarpetaFecha(RAIZ_RESULTADOS);
-  if (!carpeta) {
-    throw new Error(`No hay carpetas de resultados en ${RAIZ_RESULTADOS}`);
-  }
+async function enviarReporteDeCarpeta(carpeta) {
   const fechaCarpeta = path.basename(carpeta);
   const rutaPDF = await archivoMasReciente(carpeta, 'consolidado_', '.pdf');
   const rutaResumen = await archivoMasReciente(carpeta, 'resumen_', '.md');
@@ -111,21 +101,40 @@ async function enviarReporte() {
   console.log('PDF enviado.');
 }
 
-async function enviarFalla() {
-  const unidad = process.env.SERVICE_NAME ?? 'radicados.service';
+async function enviarFalla(motivo) {
   const fecha = new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' });
   const texto =
-    `⚠️ *Falla en ${unidad}*\n` +
+    `⚠️ *Reporte radicados — falla*\n` +
     `Fecha: ${fecha}\n` +
+    `Motivo: ${motivo}\n` +
     'Revisa los logs con:\n' +
     '`journalctl -u radicados.service -n 200 --no-pager`';
   await enviarMensaje(texto);
   console.log('Notificación de falla enviada.');
 }
 
+async function modoAuto() {
+  const fecha = fechaHoyBogota();
+  const carpetaHoy = path.join(RAIZ_RESULTADOS, fecha);
+  if (!existsSync(carpetaHoy)) {
+    await enviarFalla(`no se generó la carpeta resultados/${fecha}`);
+    return;
+  }
+  const rutaPDF = await archivoMasReciente(carpetaHoy, 'consolidado_', '.pdf');
+  if (!rutaPDF) {
+    await enviarFalla(`la carpeta resultados/${fecha} existe pero no tiene PDF consolidado`);
+    return;
+  }
+  await enviarReporteDeCarpeta(carpetaHoy);
+}
+
 try {
-  if (MODO === 'falla') await enviarFalla();
-  else await enviarReporte();
+  if (MODO === 'falla') await enviarFalla(process.argv[3] ?? 'invocación manual');
+  else if (MODO === 'reporte') {
+    // Compat: manda el PDF de hoy si existe; si no, lanza error (uso manual).
+    const carpetaHoy = path.join(RAIZ_RESULTADOS, fechaHoyBogota());
+    await enviarReporteDeCarpeta(carpetaHoy);
+  } else await modoAuto();
 } catch (err) {
   console.error(err.message);
   process.exit(1);

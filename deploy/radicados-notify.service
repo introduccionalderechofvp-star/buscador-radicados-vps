@@ -1,0 +1,14 @@
+[Unit]
+Description=Envío del reporte de radicados a Telegram (06:00 Bogotá)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=radicados
+Group=radicados
+WorkingDirectory=/home/radicados/app
+EnvironmentFile=/etc/radicados.env
+Environment=TZ=America/Bogota
+ExecStart=/usr/bin/node /home/radicados/app/notificar.js auto
+TimeoutStartSec=10m

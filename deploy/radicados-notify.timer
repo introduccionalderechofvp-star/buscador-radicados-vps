@@ -1,0 +1,10 @@
+[Unit]
+Description=Disparador del envío del reporte (06:00 Bogotá)
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+Unit=radicados-notify.service
+
+[Install]
+WantedBy=timers.target

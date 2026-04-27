@@ -101,33 +101,56 @@ Si te llega el PDF a Telegram, listo.
 
 ## 5) Instalar las unidades systemd
 
+Arquitectura: la **consulta** corre a las 02:30 Bogotá (cuando el portal
+está más libre) pero la **notificación** llega a las 06:00 Bogotá. El
+servicio de notificación revisa la carpeta `resultados/<hoy>/`: si hay
+PDF, lo manda; si no, manda un mensaje de alerta con el motivo.
+
+Las unidades de **cleanup** (rotación de carpetas viejas) y de **failure
+inmediato** quedan instaladas como referencia pero **deshabilitadas** por
+defecto. Cópialas y actívalas solo si las quieres.
+
 ```bash
 sudo cp /home/radicados/app/deploy/radicados.service          /etc/systemd/system/
 sudo cp /home/radicados/app/deploy/radicados.timer            /etc/systemd/system/
+sudo cp /home/radicados/app/deploy/radicados-notify.service   /etc/systemd/system/
+sudo cp /home/radicados/app/deploy/radicados-notify.timer     /etc/systemd/system/
+# Opcionales (para futuro):
 sudo cp /home/radicados/app/deploy/radicados-failure.service  /etc/systemd/system/
 sudo cp /home/radicados/app/deploy/radicados-cleanup.service  /etc/systemd/system/
 sudo cp /home/radicados/app/deploy/radicados-cleanup.timer    /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now radicados.timer radicados-cleanup.timer
+sudo systemctl enable --now radicados.timer radicados-notify.timer
 ```
 
-Verificar que el timer esté activo:
+Verificar que los timers estén activos:
 
 ```bash
 systemctl list-timers | grep radicados
 ```
 
-Deberías ver la próxima ejecución a las **02:30** hora Bogotá.
+Deberías ver dos líneas: `radicados.timer` a las **02:30** y
+`radicados-notify.timer` a las **06:00** hora Bogotá.
 
 ## 6) Probar la corrida completa manualmente
+
+Lanzar la consulta (no notifica al terminar):
 
 ```bash
 sudo systemctl start radicados.service
 journalctl -u radicados.service -f
 ```
 
-Cuando termine, debería llegarte el PDF a Telegram. La corrida completa
-de los ~97 radicados toma entre 20 y 60 min según la latencia del portal.
+`Ctrl+C` sale del log en vivo (no detiene la corrida). Tarda 20–60 min.
+
+Cuando termine, lanzar la notificación manualmente sin esperar a las 06:00:
+
+```bash
+sudo systemctl start radicados-notify.service
+```
+
+El PDF debe llegar a Telegram. Si la consulta falló y no hay PDF, recibirás
+en su lugar un mensaje de alerta describiendo qué pasó.
 
 ## 7) Mantenimiento
 
@@ -151,28 +174,37 @@ journalctl -u radicados.service -n 200 --no-pager      # última corrida
 journalctl -u radicados.service --since "yesterday"
 ```
 
-### Forzar una corrida ahora
+### Forzar una corrida o un envío ahora
 
 ```bash
-sudo systemctl start radicados.service
+sudo systemctl start radicados.service          # solo consulta, no notifica
+sudo systemctl start radicados-notify.service   # solo manda PDF de hoy
 ```
 
 ### Cambiar la hora
 
-Edita `OnCalendar` en `/etc/systemd/system/radicados.timer` y:
+Edita `OnCalendar` en `/etc/systemd/system/radicados.timer` (consulta) o
+`/etc/systemd/system/radicados-notify.timer` (notificación) y:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl restart radicados.timer
+sudo systemctl restart radicados.timer radicados-notify.timer
 ```
 
-### Borrar resultados antiguos a mano
+### Activar la rotación automática (opcional)
+
+Por defecto las carpetas viejas se conservan. Para activar la limpieza
+semanal de carpetas con más de 60 días:
+
+```bash
+sudo systemctl enable --now radicados-cleanup.timer
+```
+
+Para correr la limpieza una sola vez sin programarla:
 
 ```bash
 sudo systemctl start radicados-cleanup.service
 ```
-
-(El timer lo corre automáticamente cada domingo a las 03:30.)
 
 ## 8) Solución de problemas
 
@@ -188,6 +220,7 @@ sudo systemctl start radicados-cleanup.service
 
 - **RAM**: ~500 MB pico durante la corrida (Chromium headless).
 - **Disco por corrida**: ~15 MB de PDF + ~30–40 MB de capturas/JSON.
-- **Disco con rotación 60 días**: ~3 GB en steady state.
+- **Disco con rotación 60 días**: ~3 GB en steady state. Sin rotación
+  (config por defecto): ~18 GB/año.
 - **CPU**: 1 vCPU es suficiente; la corrida es bound por la latencia del
   portal de la Rama, no por CPU.
