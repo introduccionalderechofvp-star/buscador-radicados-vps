@@ -1,0 +1,21 @@
+[Unit]
+Description=Consulta nocturna de radicados (amigo) - Rama Judicial
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=radicados-amigo
+Group=radicados-amigo
+WorkingDirectory=/home/radicados-amigo/app
+EnvironmentFile=/etc/radicados-amigo.env
+Environment=TZ=America/Bogota
+Environment=NODE_ENV=production
+Environment=RADICADOS_FILE=radicados-amigo.md
+ExecStartPre=-/usr/bin/git -C /home/radicados-amigo/app pull --ff-only
+ExecStart=/usr/bin/node /home/radicados-amigo/app/consultar.js
+TimeoutStartSec=2h
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Disparador nocturno de radicados-amigo.service (04:00 hora Bogotá)
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+RandomizedDelaySec=2m
+Unit=radicados-amigo.service
+
+[Install]
+WantedBy=timers.target

@@ -468,12 +468,13 @@ function parseRadicadosMd(contenido) {
 }
 
 async function leerRadicados() {
-  if (existsSync('radicados.md')) {
-    const contenido = await readFile('radicados.md', 'utf8');
+  const archivoMd = process.env.RADICADOS_FILE || 'radicados.md';
+  if (existsSync(archivoMd)) {
+    const contenido = await readFile(archivoMd, 'utf8');
     const lista = parseRadicadosMd(contenido);
     if (lista.length === 0) {
       throw new Error(
-        'radicados.md existe pero no encontré bullets con números de 23 dígitos. ' +
+        `${archivoMd} existe pero no encontré bullets con números de 23 dígitos. ` +
           'Revisa el formato.',
       );
     }
@@ -483,7 +484,7 @@ async function leerRadicados() {
     const config = JSON.parse(await readFile('radicados.json', 'utf8'));
     return config.radicados;
   }
-  throw new Error('No encontré radicados.md ni radicados.json en la carpeta.');
+  throw new Error(`No encontré ${archivoMd} ni radicados.json en la carpeta.`);
 }
 
 const DIAS_MOVIMIENTO_RECIENTE = 5;

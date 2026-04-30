@@ -10,6 +10,7 @@
     "reporte": "node consultar.js && node notificar.js"
   },
   "dependencies": {
+    "nodemailer": "^8.0.7",
     "pdf-lib": "^1.17.1",
     "playwright": "^1.47.0"
   }

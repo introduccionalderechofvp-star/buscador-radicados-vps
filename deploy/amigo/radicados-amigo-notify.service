@@ -1,0 +1,14 @@
+[Unit]
+Description=Envío del reporte de radicados (amigo) por correo
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=radicados-amigo
+Group=radicados-amigo
+WorkingDirectory=/home/radicados-amigo/app
+EnvironmentFile=/etc/radicados-amigo.env
+Environment=TZ=America/Bogota
+ExecStart=/usr/bin/node /home/radicados-amigo/app/notificar-email.js auto
+TimeoutStartSec=10m
