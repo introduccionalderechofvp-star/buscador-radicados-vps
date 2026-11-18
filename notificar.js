@@ -70,10 +70,10 @@ async function archivoMasReciente(carpeta, prefijo, extension) {
 }
 
 function captionDesdeResumen(md, fechaCarpeta) {
-  // Toma las líneas de estadísticas (que empiezan con "- Total" y "- Con/Sin/Fallas")
-  // y la primera sección "Con movimiento" si cabe.
+  // Toma las líneas de estadísticas (que empiezan con "- Total" y
+  // "- Con/Sin/Privados/Fallas") y la primera sección "Con movimiento" si cabe.
   const lineas = md.split('\n');
-  const stats = lineas.filter((l) => /^-\s+(Total|Con|Sin|Fallas)/.test(l));
+  const stats = lineas.filter((l) => /^-\s+(Total|Con|Sin|Privados|Fallas)/.test(l));
   let caption = `*Reporte radicados · ${fechaCarpeta}*\n` + stats.join('\n');
   // Topamos en 1024 caracteres (límite de Telegram para captions).
   if (caption.length > 1000) caption = caption.slice(0, 990) + '\n…';

@@ -71,16 +71,55 @@ async function inyectarBannerTimestamp(page, texto) {
   }, texto);
 }
 
+// La página del portal pide los resultados a esta API y la respuesta trae
+// `procesos[].esPrivado`. La leemos para reconocer procesos privados sin
+// esperar un detalle que nunca carga.
+const PATRON_API_BUSQUEDA = /\/Procesos\/Consulta\/NumeroRadicacion/i;
+
+function esperarRespuestaApi(page) {
+  // La API está en otro origen (puerto 448): filtramos por GET para no tomar
+  // la respuesta vacía de un preflight OPTIONS a la misma URL.
+  return page
+    .waitForResponse(
+      (r) => r.request().method() === 'GET' && PATRON_API_BUSQUEDA.test(r.url()),
+      { timeout: TIMEOUT_CONSULTA },
+    )
+    .then((r) => r.json())
+    .catch(() => null);
+}
+
+function procesosDeApi(datosApi) {
+  return Array.isArray(datosApi?.procesos) ? datosApi.procesos : null;
+}
+
+function todosPrivados(datosApi) {
+  const procesos = procesosDeApi(datosApi);
+  return procesos != null && procesos.length > 0 && procesos.every((p) => p.esPrivado === true);
+}
+
 // Realiza la búsqueda (navega, marca "Todos los Procesos", escribe el radicado
-// y pulsa Consultar). Devuelve un string con el estado tras la consulta:
+// y pulsa Consultar). Devuelve { estado, procesosApi }, donde estado es:
 // 'detalle'           → ya estamos en la vista de detalle de un único proceso
 // 'listado'           → hay una lista con al menos una fila que contiene el radicado
 // 'varios-registros'  → apareció el diálogo "Se han encontrado varios registros"
 //                        (ya se cerró con VOLVER antes de retornar)
+// 'privado'           → la API dice que todas las coincidencias son privadas
+// y procesosApi es la lista `procesos` de la API (null si no se capturó).
 // Lanza error si el portal responde "La consulta no generó resultados".
 async function realizarBusqueda(page, numero) {
   await page.goto(URL_BASE, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_NAV });
 
+  // La página es una app Angular: tras 'domcontentloaded' el selector puede no
+  // estar dibujado aún. Si no se marca, el portal busca solo procesos con
+  // actuaciones en los últimos 30 días y responde "no generó resultados" para
+  // los demás.
+  await page
+    .getByText(/Todos los Procesos/i)
+    .first()
+    .waitFor({ state: 'visible', timeout: 20_000 })
+    .catch(() => {});
+
+  let radioMarcado = false;
   const estrategiasRadioTodos = [
     () => page.getByRole('radio', { name: /Todos los Procesos/i }),
     () => page.locator('mat-radio-button').filter({ hasText: /Todos los Procesos/i }),
@@ -92,10 +131,14 @@ async function realizarBusqueda(page, numero) {
     if ((await locator.count()) === 0) continue;
     try {
       await locator.first().click({ timeout: 5000 });
+      radioMarcado = true;
       break;
     } catch {
       /* probar siguiente */
     }
+  }
+  if (!radioMarcado) {
+    console.warn('  ⚠ No pude marcar "Todos los Procesos"; la búsqueda puede limitarse a 30 días.');
   }
 
   const inputRadicado = page
@@ -107,8 +150,13 @@ async function realizarBusqueda(page, numero) {
   await inputRadicado.fill(numero);
 
   const botonConsultar = page.getByRole('button', { name: /consultar/i }).first();
+  const respuestaApi = esperarRespuestaApi(page);
   await botonConsultar.click();
 
+  // Se resuelve solo si la API dice que todo es privado; si no, nunca.
+  const esperaPrivado = respuestaApi.then((d) =>
+    todosPrivados(d) ? undefined : new Promise(() => {}),
+  );
   const esperaDetalle = page
     .getByText(/DETALLE DEL PROCESO/i)
     .first()
@@ -128,11 +176,24 @@ async function realizarBusqueda(page, numero) {
     .waitFor({ state: 'visible', timeout: TIMEOUT_CONSULTA });
 
   await Promise.race([
+    esperaPrivado,
     esperaDetalle,
     esperaFila,
     esperaSinResultados,
     esperaVariosRegistros,
   ]).catch(() => {});
+
+  // Cuando la página ya pintó resultados, la respuesta de la API ya llegó;
+  // el tope de 5 s solo cubre el caso en que el portal use otra ruta.
+  const datosApi = await Promise.race([
+    respuestaApi,
+    new Promise((resolve) => setTimeout(() => resolve(null), 5000)),
+  ]);
+  const procesosApi = procesosDeApi(datosApi);
+
+  if (todosPrivados(datosApi)) {
+    return { estado: 'privado', procesosApi };
+  }
 
   if ((await page.getByText(/La consulta no generó resultados/i).count()) > 0) {
     throw new Error('El portal devolvió "La consulta no generó resultados".');
@@ -158,15 +219,15 @@ async function realizarBusqueda(page, numero) {
       .first()
       .waitFor({ state: 'hidden', timeout: 10_000 })
       .catch(() => {});
-    return 'varios-registros';
+    return { estado: 'varios-registros', procesosApi };
   }
 
   if ((await page.getByText(/DETALLE DEL PROCESO/i).count()) > 0) {
-    return 'detalle';
+    return { estado: 'detalle', procesosApi };
   }
 
   if ((await page.locator('table tr').filter({ hasText: numero }).count()) > 0) {
-    return 'listado';
+    return { estado: 'listado', procesosApi };
   }
 
   throw new Error('No logré interpretar el estado de la página tras la búsqueda.');
@@ -357,9 +418,22 @@ async function procesarDetalle(page, numero, aliasCompleto, directorioSalida) {
   return resultado;
 }
 
+const MENSAJE_PRIVADO = 'Proceso privado: la consulta pública no muestra sus actuaciones.';
+
+function entradaPrivada(subindice) {
+  return { ok: false, privado: true, subindice, error: MENSAJE_PRIVADO };
+}
+
 async function consultarRadicado(page, numero, alias, directorioSalida) {
   console.log(`\n[${alias ?? numero}] Consultando ${numero}…`);
-  const estado = await realizarBusqueda(page, numero);
+  const { estado, procesosApi } = await realizarBusqueda(page, numero);
+
+  if (estado === 'privado') {
+    const cantidad = procesosApi?.length ?? 1;
+    console.log(`  🔒 Proceso privado (${cantidad} coincidencia(s)); no se consulta el detalle.`);
+    if (cantidad === 1) return [entradaPrivada(null)];
+    return procesosApi.map((_, i) => entradaPrivada(i + 1));
+  }
 
   if (estado === 'detalle' || estado === 'listado') {
     if (estado === 'listado') {
@@ -380,11 +454,22 @@ async function consultarRadicado(page, numero, alias, directorioSalida) {
     `  ℹ Encontradas ${cantidad} coincidencias para este radicado; consultaré cada una.`,
   );
 
+  // La tabla se pinta en el mismo orden de la lista de la API; solo usamos
+  // esa correspondencia si ambas tienen el mismo número de filas.
+  const privadoPorFila =
+    procesosApi?.length === cantidad ? procesosApi.map((p) => p.esPrivado === true) : null;
+
   const salidas = [];
   for (let i = 0; i < cantidad; i += 1) {
     const subindice = i + 1;
     const sufijoIdx = `-${String(subindice).padStart(2, '0')}`;
     const aliasCompleto = `${alias ?? numero}${sufijoIdx}`;
+
+    if (privadoPorFila?.[i]) {
+      console.log(`  🔒 Coincidencia ${subindice}/${cantidad} (${aliasCompleto}) es privada.`);
+      salidas.push(entradaPrivada(subindice));
+      continue;
+    }
 
     if (i > 0) {
       try {
@@ -412,9 +497,7 @@ async function consultarRadicado(page, numero, alias, directorioSalida) {
   return salidas;
 }
 
-// Errores que consideramos transitorios (vale la pena reintentar). El
-// "no generó resultados" y similares NO entran, porque son respuestas
-// legítimas del portal, no fallas de red o render.
+// Errores que consideramos transitorios (fallas de red o render).
 const PATRONES_TRANSITORIOS = [
   /Timeout \d+ms exceeded/i,
   /No logré interpretar el estado/i,
@@ -424,6 +507,14 @@ const PATRONES_TRANSITORIOS = [
 function esErrorTransitorio(mensaje) {
   if (!mensaje) return false;
   return PATRONES_TRANSITORIOS.some((re) => re.test(mensaje));
+}
+
+// Además de los transitorios, reintentamos una vez el "no generó resultados":
+// lo hemos visto aparecer en procesos que sí existen. Los privados no se
+// reintentan porque el resultado sería el mismo.
+function debeReintentarse(entrada) {
+  if (entrada.ok || entrada.privado) return false;
+  return esErrorTransitorio(entrada.error) || /no generó resultados/i.test(entrada.error ?? '');
 }
 
 function aliasConSubindice(alias, subindice) {
@@ -490,6 +581,7 @@ async function leerRadicados() {
 const DIAS_MOVIMIENTO_RECIENTE = 5;
 
 function clasificarEntrada(entrada, umbral) {
+  if (entrada.privado) return { tipo: 'privado' };
   if (!entrada.ok) return { tipo: 'falla' };
   const actuaciones = entrada.resultado.actuaciones ?? [];
   if (actuaciones.length === 0) {
@@ -539,13 +631,17 @@ async function generarPDFCompleto(entradas, directorioSalida, fechaConsulta) {
 
   const umbral = new Date(fechaConsulta);
   umbral.setDate(umbral.getDate() - DIAS_MOVIMIENTO_RECIENTE);
-  const conteo = { conMovimiento: 0, sinMovimiento: 0, sinActuaciones: 0, fallas: 0 };
+  const conteo = { conMovimiento: 0, sinMovimiento: 0, sinActuaciones: 0, privados: 0, fallas: 0 };
   const listaConMovimiento = [];
+  const listaPrivados = [];
   const listaFallas = [];
   for (const e of entradas) {
     const clasif = clasificarEntrada(e, umbral);
     const etiqueta = aliasConSubindice(e.alias, e.subindice);
-    if (clasif.tipo === 'falla') {
+    if (clasif.tipo === 'privado') {
+      conteo.privados += 1;
+      listaPrivados.push(sanitizarParaPDF(`${etiqueta} · ${e.numero}`));
+    } else if (clasif.tipo === 'falla') {
       conteo.fallas += 1;
       const errBreve = sanitizarParaPDF(e.error ?? '').replace(/\s+/g, ' ').slice(0, 80);
       listaFallas.push(sanitizarParaPDF(`${etiqueta} · ${e.numero} — ${errBreve}`));
@@ -564,6 +660,7 @@ async function generarPDFCompleto(entradas, directorioSalida, fechaConsulta) {
     `Con movimiento en los últimos ${DIAS_MOVIMIENTO_RECIENTE} días: ${conteo.conMovimiento}`,
     `Sin movimiento reciente: ${conteo.sinMovimiento}`,
     `Sin actuaciones registradas: ${conteo.sinActuaciones}`,
+    `Privados (no consultables públicamente): ${conteo.privados}`,
     `Fallas: ${conteo.fallas}`,
   ];
   let y = ALTO - MARGEN - 110;
@@ -614,6 +711,10 @@ async function generarPDFCompleto(entradas, directorioSalida, fechaConsulta) {
     listaConMovimiento,
   );
   dibujarSeccion(`Fallas (${listaFallas.length})`, listaFallas);
+  dibujarSeccion(
+    `Privados — no consultables públicamente (${listaPrivados.length})`,
+    listaPrivados,
+  );
 
   // Nota de ordenamiento al pie, si todavía queda espacio en la página donde
   // terminamos; si no, la omitimos para no añadir una página casi vacía.
@@ -714,11 +815,13 @@ async function generarResumen(entradas, directorioSalida, fechaConsulta) {
   const conMovimiento = [];
   const sinMovimiento = [];
   const sinActuaciones = [];
+  const privados = [];
   const fallas = [];
 
   for (const e of entradas) {
     const clasif = clasificarEntrada(e, umbral);
-    if (clasif.tipo === 'falla') fallas.push(e);
+    if (clasif.tipo === 'privado') privados.push(e);
+    else if (clasif.tipo === 'falla') fallas.push(e);
     else if (clasif.tipo === 'sin-actuaciones') sinActuaciones.push(e);
     else if (clasif.tipo === 'con-movimiento') conMovimiento.push({ ...e, recientes: clasif.recientes });
     else sinMovimiento.push({ ...e, fechaUltima: clasif.fechaUltima });
@@ -733,6 +836,9 @@ async function generarResumen(entradas, directorioSalida, fechaConsulta) {
   lineas.push(`- Sin movimiento reciente: **${sinMovimiento.length}**`);
   if (sinActuaciones.length > 0) {
     lineas.push(`- Sin actuaciones registradas: **${sinActuaciones.length}**`);
+  }
+  if (privados.length > 0) {
+    lineas.push(`- Privados (no consultables públicamente): **${privados.length}**`);
   }
   lineas.push(`- Fallas: **${fallas.length}**`);
   lineas.push('');
@@ -781,6 +887,16 @@ async function generarResumen(entradas, directorioSalida, fechaConsulta) {
       const etiqueta = aliasConSubindice(e.alias, e.subindice);
       const marca = e.reintentado ? ' [reintento]' : '';
       lineas.push(`- ${etiqueta} — ${e.numero}: ${e.error}${marca}`);
+    }
+    lineas.push('');
+  }
+
+  if (privados.length > 0) {
+    lineas.push(`## Privados — no consultables públicamente (${privados.length})`);
+    lineas.push('');
+    for (const e of privados) {
+      const etiqueta = aliasConSubindice(e.alias, e.subindice);
+      lineas.push(`- ${etiqueta} — ${e.numero}`);
     }
     lineas.push('');
   }
@@ -901,17 +1017,17 @@ async function main() {
   }
 
   // Identificar qué radicados necesitan reintento (con al menos una falla
-  // transitoria). Reintentamos el radicado completo, no subprocesos sueltos.
+  // reintentable). Reintentamos el radicado completo, no subprocesos sueltos.
   const radicadosAReintentar = new Set();
   for (const e of entradas) {
-    if (!e.ok && esErrorTransitorio(e.error)) {
+    if (debeReintentarse(e)) {
       radicadosAReintentar.add(e.numero);
     }
   }
 
   if (radicadosAReintentar.size > 0) {
     console.log(
-      `\n=== Reintentando ${radicadosAReintentar.size} radicado(s) con fallas transitorias ===`,
+      `\n=== Reintentando ${radicadosAReintentar.size} radicado(s) con fallas ===`,
     );
     for (const numero of radicadosAReintentar) {
       const radicado = radicados.find((r) => r.numero === numero);
@@ -929,11 +1045,15 @@ async function main() {
 
   console.log('\n=== Resumen ===');
   let okCount = 0;
+  let privadoCount = 0;
   let fallaCount = 0;
   for (const e of entradas) {
     const aliasMostrado = aliasConSubindice(e.alias, e.subindice);
     const marca = e.reintentado ? ' [reintento]' : '';
-    if (e.ok) {
+    if (e.privado) {
+      privadoCount += 1;
+      console.log(`  ${aliasMostrado} ${e.numero}: PRIVADO`);
+    } else if (e.ok) {
       okCount += 1;
       console.log(
         `  ${aliasMostrado} ${e.numero}: OK (${e.resultado.totalActuacionesEnPortal} actuaciones)${marca}`,
@@ -943,7 +1063,7 @@ async function main() {
       console.log(`  ${aliasMostrado} ${e.numero}: FALLA (${e.error})${marca}`);
     }
   }
-  console.log(`\nTotal: ${okCount} OK, ${fallaCount} fallas.`);
+  console.log(`\nTotal: ${okCount} OK, ${privadoCount} privados, ${fallaCount} fallas.`);
 
   try {
     const rutaResumen = await generarResumen(entradas, directorioSalida, fechaConsulta);

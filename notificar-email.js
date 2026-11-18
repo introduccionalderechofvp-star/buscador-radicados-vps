@@ -53,7 +53,7 @@ async function archivoMasReciente(carpeta, prefijo, extension) {
 
 function statsDesdeResumen(md) {
   const lineas = md.split('\n');
-  return lineas.filter((l) => /^-\s+(Total|Con|Sin|Fallas)/.test(l)).join('\n');
+  return lineas.filter((l) => /^-\s+(Total|Con|Sin|Privados|Fallas)/.test(l)).join('\n');
 }
 
 function asuntoConFecha(fecha) {
